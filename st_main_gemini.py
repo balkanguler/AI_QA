@@ -7,23 +7,36 @@ import google.generativeai as genai
 import os
 from typing import List, Dict, Tuple
 import warnings
+import requests
+
 warnings.filterwarnings("ignore")
 
+@st.cache_resource
+def get_data_manager():
+    class DataManager:
+        def __init__(self):
+            self.embedding_model = None
+            self.qa_data = []
+            self.embeddings = None
+            self.index = None
+            self.embeddings_database_loaded = False
+    
+    return DataManager()
+
 class RAGPipelineGemini:
-    def __init__(self):
-        self.embedding_model = None
-        self.qa_data = []
-        self.embeddings = None
-        self.index = None
+    
+
+    def __init__(self, data_manager=None):
         self.gemini_model = None
+        self.data_manager = data_manager if data_manager else get_data_manager()
         
-    @st.cache_resource
-    def load_models(_self):
+    def load_models(self):
         """Load embedding model and initialize Gemini"""
+        print("Loading embedding model...")
         # Load embedding model
-        embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
-        
-        return embedding_model
+        if not self.data_manager.embedding_model:
+            self.data_manager.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+       
     
     def initialize_gemini(self, api_key: str, model_name: str = "gemini-1.5-flash"):
         """Initialize Gemini API"""
@@ -37,6 +50,8 @@ class RAGPipelineGemini:
     
     def test_gemini_connection(self):
         """Test if Gemini API is working"""
+        return "API working" # save tokens for now
+    
         try:
             response = self.gemini_model.generate_content("Hello, respond with 'API working'")
             return "API working" in response.text
@@ -44,19 +59,37 @@ class RAGPipelineGemini:
             st.error(f"Gemini API test failed: {str(e)}")
             return False
     
+    def download_qa_file(self, url, filename):
+        if os.path.exists(filename):
+            print(f"File '{filename}' already exists!")
+            return
+        
+        print(f"Downloading {filename}...")
+        response = requests.get(url)
+        
+        with open(filename, "wb") as file:
+            file.write(response.content)
+        print("Download complete!")
+    
     def load_qa_data(self, file_path: str):
         """Load questions and answers from JSON file"""
         try:
+            if self.data_manager.qa_data:
+                print("QA data already loaded.")
+                st.success(f"Loaded {len(self.data_manager.qa_data)} Q&A pairs")
+                return True 
+             
             with open(file_path, 'r', encoding='utf-8') as f:
                 data = json.load(f)
             
             # Handle both single object and array formats
             if isinstance(data, list):
-                self.qa_data = data
+                self.data_manager.qa_data = data
             else:
-                self.qa_data = [data]
+               self.data_manager.qa_data = [data]
                 
-            st.success(f"Loaded {len(self.qa_data)} Q&A pairs")
+            st.success(f"Loaded {len(self.data_manager.qa_data)} Q&A pairs")
+            print(f"Loaded {len(self.data_manager.qa_data)} Q&A pairs")
             return True
         except Exception as e:
             st.error(f"Error loading QA data: {str(e)}")
@@ -64,45 +97,47 @@ class RAGPipelineGemini:
     
     def create_embeddings(self):
         """Create embeddings for all questions"""
-        if not self.qa_data:
+        if not self.data_manager.qa_data:
             st.error("No QA data loaded")
             return False
-            
-        if self.embedding_model is None:
-            self.embedding_model = self.load_models()
-        
-        questions = [item['question'] for item in self.qa_data]
+
+        print("Creating embeddings for questions...")  
+    
+        questions = [item['question'] for item in self.data_manager.qa_data]
         
         with st.spinner("Creating embeddings..."):
-            self.embeddings = self.embedding_model.encode(questions)
-        
+            self.data_manager.embeddings = self.data_manager.embedding_model.encode(questions)
+        print("Embeddings encoding is done successfully!")
         # Create FAISS index
-        dimension = self.embeddings.shape[1]
-        self.index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
+        dimension = self.data_manager.embeddings.shape[1]
+        self.data_manager.index = faiss.IndexFlatIP(dimension)  # Inner product for cosine similarity
         
         # Normalize embeddings for cosine similarity
-        faiss.normalize_L2(self.embeddings)
-        self.index.add(self.embeddings)
+        faiss.normalize_L2(self.data_manager.embeddings)
+        self.data_manager.index.add(self.data_manager.embeddings)
         
         st.success("Embeddings created and indexed successfully!")
+        print("Embeddings created and indexed successfully!")
+    
+        self.data_manager.embeddings_database_loaded = True
         return True
     
     def find_similar_questions(self, query: str, k: int = 10) -> List[Tuple[Dict, float]]:
         """Find k most similar questions to the query"""
-        if self.index is None or self.embedding_model is None:
+        if self.data_manager.index is None or self.data_manager.embedding_model is None:
             return []
         
         # Embed the query
-        query_embedding = self.embedding_model.encode([query])
+        query_embedding = self.data_manager.embedding_model.encode([query])
         faiss.normalize_L2(query_embedding)
         
         # Search for similar questions
-        scores, indices = self.index.search(query_embedding, min(k, len(self.qa_data)))
+        scores, indices = self.data_manager.index.search(query_embedding, min(k, len(self.data_manager.qa_data)))
         
         results = []
         for i, (score, idx) in enumerate(zip(scores[0], indices[0])):
-            if idx < len(self.qa_data):
-                results.append((self.qa_data[idx], float(score)))
+            if idx < len(self.data_manager.qa_data):
+                results.append((self.data_manager.qa_data[idx], float(score)))
         
         return results
     
@@ -181,17 +216,7 @@ def main():
         # Gemini API Configuration
         st.subheader("💎 Gemini API Settings")
         
-        # API Key input
-        api_key = st.text_input(
-            "Enter your Gemini API Key:",
-            type="password",
-            help="Get your API key from https://makersuite.google.com/app/apikey",
-            value=st.session_state.get('gemini_api_key', '')
-        )
-        
-        if api_key:
-            st.session_state.gemini_api_key = api_key
-        
+    
         # Model selection
         model_options = [
             "gemini-1.5-flash",
@@ -207,71 +232,38 @@ def main():
         )
         
         # Initialize Gemini button
-        if api_key and st.button("🚀 Initialize Gemini API"):
-            if rag.initialize_gemini(api_key, selected_model):
-                if rag.test_gemini_connection():
-                    st.success("✅ Gemini API connected successfully!")
-                    st.session_state.gemini_ready = True
-                else:
-                    st.error("❌ Gemini API test failed")
+  
+        if rag.initialize_gemini(st.secrets["llm_api_key"], selected_model):
+            if rag.test_gemini_connection():
+                st.success("✅ Gemini API connected successfully!")
+                st.session_state.gemini_ready = True
             else:
-                st.error("❌ Failed to initialize Gemini API")
-        
-        # Show API key instructions
-        if not api_key:
-            with st.expander("📋 How to get Gemini API Key"):
-                st.markdown("""
-                1. Go to [Google AI Studio](https://makersuite.google.com/app/apikey)
-                2. Sign in with your Google account
-                3. Click "Create API Key"
-                4. Copy the API key and paste it above
-                5. Click "Initialize Gemini API"
-                
-                **Note**: Gemini API has generous free usage limits!
-                """)
-        
-        st.divider()
-        
-        # File upload section
-        st.subheader("📁 Data Upload")
-        uploaded_file = st.file_uploader(
-            "Upload QAS JSON file",
-            type=['json'],
-            help="Upload your questions and answers JSON file"
-        )
-        
-        if uploaded_file is not None:
-            # Save uploaded file temporarily
-            with open("temp_qas.json", "wb") as f:
-                f.write(uploaded_file.getbuffer())
-            
-            # Load QA data
-            if st.button("📥 Load Q&A Data"):
-                if rag.load_qa_data("temp_qas.json"):
-                    st.session_state.data_loaded = True
-        
-        # Create embeddings button
-        if hasattr(st.session_state, 'data_loaded') and st.session_state.data_loaded:
-            if st.button("🔗 Create Embeddings"):
-                if rag.create_embeddings():
-                    st.session_state.embeddings_ready = True
-        
-        st.divider()
-        
-        # Display stats
-        st.subheader("📊 Status")
-        
-        # API Status
-        if hasattr(st.session_state, 'gemini_ready') and st.session_state.gemini_ready:
-            st.success(f"✅ Gemini API ({selected_model})")
+                st.error("❌ Gemini API test failed")
         else:
-            st.error("❌ Gemini API")
+            st.error("❌ Failed to initialize Gemini API")
         
-        # Data Status
-        if rag.qa_data:
-            st.metric("Q&A Pairs Loaded", len(rag.qa_data))
+
+        
+        st.divider()
+        
+        rag.download_qa_file(st.secrets.qa_file_url, "temp_qas.json")
+        rag.load_qa_data("temp_qas.json")
+
+        rag.load_models()
+         # Data Status
+        if rag.data_manager.qa_data:
+            st.metric("Q&A Pairs Loaded", len(rag.data_manager.qa_data))
         else:
             st.metric("Q&A Pairs Loaded", 0)
+
+        print(f"embeddings_database_loaded:  {rag.data_manager.embeddings_database_loaded}")
+        if not rag.data_manager.embeddings_database_loaded:
+            rag.create_embeddings()
+            st.session_state.embeddings_ready = True
+        else:
+            print("Embeddings already created, skipping...")
+            st.session_state.embeddings_ready = True
+        print(f"embeddings_database_loaded 2:  {rag.data_manager.embeddings_database_loaded}")
         
         # Embeddings Status
         if hasattr(st.session_state, 'embeddings_ready') and st.session_state.embeddings_ready:
@@ -279,14 +271,10 @@ def main():
         else:
             st.error("❌ Embeddings Not Ready")
         
-        # Overall Status
-        if (hasattr(st.session_state, 'gemini_ready') and st.session_state.gemini_ready and
-            hasattr(st.session_state, 'embeddings_ready') and st.session_state.embeddings_ready):
-            st.success("🎉 System Ready!")
+
     
     # Main interface
-    if (hasattr(st.session_state, 'gemini_ready') and st.session_state.gemini_ready and
-        hasattr(st.session_state, 'embeddings_ready') and st.session_state.embeddings_ready):
+    if  hasattr(st.session_state, 'embeddings_ready') and st.session_state.embeddings_ready:
         
         st.header("💬 Ask a Question")
         
