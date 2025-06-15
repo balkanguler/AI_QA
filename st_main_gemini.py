@@ -35,7 +35,8 @@ class RAGPipelineGemini:
         print("Loading embedding model...")
         # Load embedding model
         if not self.data_manager.embedding_model:
-            self.data_manager.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            #self.data_manager.embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+            self.data_manager.embedding_model = SentenceTransformer('emrecan/bert-base-turkish-cased-mean-nli-stsb-tr')
        
     
     def initialize_gemini(self, api_key: str, model_name: str = "gemini-1.5-flash"):
@@ -200,8 +201,8 @@ def main():
         layout="wide"
     )
     
-    st.title("💎 RAG Pipeline with Gemini API")
-    st.markdown("Upload your Q&A data and ask questions to get relevant answers powered by Google Gemini!")
+    st.title("💎 AI answers your question based on the previous questions")
+#    st.markdown("Upload your Q&A data and ask questions to get relevant answers powered by Google Gemini!")
     
     # Initialize RAG pipeline
     if 'rag_pipeline' not in st.session_state:
